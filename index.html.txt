@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>หนังสือเสียงภาษาไทย</title>
+  <style>
+    body { font-family: "Sarabun", "Tahoma", sans-serif; max-width: 720px; margin: 40px auto; padding: 0 20px; color: #222; }
+    h1 { font-size: 1.6rem; }
+    textarea { width: 100%; height: 260px; font-size: 1rem; padding: 12px; box-sizing: border-box; font-family: inherit; }
+    .controls { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0; align-items: center; }
+    button { padding: 10px 18px; font-size: 1rem; border: none; border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer; }
+    button:disabled { background: #9ca3af; cursor: not-allowed; }
+    button.secondary { background: #6b7280; }
+    select, input[type="range"] { font-size: 1rem; }
+    #status { color: #555; margin-top: 8px; min-height: 1.2em; }
+    #download { display: inline-block; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h1>หนังสือเสียงภาษาไทย</h1>
+
+  <textarea id="text" placeholder="วางข้อความภาษาไทยที่นี่..."></textarea>
+
+  <div class="controls">
+    <label>เสียง:
+      <select id="voice">
+        <option value="th-TH-PremwadeeNeural">เสียงผู้หญิง (Premwadee)</option>
+        <option value="th-TH-NiwatNeural">เสียงผู้ชาย (Niwat)</option>
+      </select>
+    </label>
+    <label>ความเร็ว:
+      <input type="range" id="rate" min="0.5" max="1.5" step="0.1" value="1">
+      <span id="rateValue">1.0</span>
+    </label>
+  </div>
+
+  <div class="controls">
+    <button id="play">▶ สร้างและเล่นเสียง</button>
+    <button id="stop" class="secondary" disabled>⏹ หยุด</button>
+  </div>
+
+  <div id="status"></div>
+  <a id="download" href="#" download="audiobook.mp3" hidden>⬇ ดาวน์โหลดไฟล์ MP3</a>
+
+  <script>
+    const textEl = document.getElementById("text");
+    const voiceEl = document.getElementById("voice");
+    const rateEl = document.getElementById("rate");
+    const rateValue = document.getElementById("rateValue");
+    const playBtn = document.getElementById("play");
+    const stopBtn = document.getElementById("stop");
+    const statusEl = document.getElementById("status");
+    const downloadEl = document.getElementById("download");
+
+    const MAX_CHARS = 800;
+    let audio = null;
+    let stopped = false;
+    let parts = [];
+
+    rateEl.addEventListener("input", () => {
+      rateValue.textContent = Number(rateEl.value).toFixed(1);
+    });
+
+    // แบ่งข้อความตามบรรทัด ไม่เกิน MAX_CHARS ต่อชิ้น
+    function splitText(text) {
+      const result = [];
+      let buffer = "";
+      for (const raw of text.split(/\r?\n/)) {
+        let line = raw.trim();
+        if (!line) continue;
+        while (line.length > MAX_CHARS) {
+          if (buffer) { result.push(buffer); buffer = ""; }
+          result.push(line.slice(0, MAX_CHARS));
+          line = line.slice(MAX_CHARS);
+        }
+        if (!buffer) buffer = line;
+        else if (buffer.length + 1 + line.length <= MAX_CHARS) buffer += "\n" + line;
+        else { result.push(buffer); buffer = line; }
+      }
+      if (buffer) result.push(buffer);
+      return result;
+    }
+
+    // ส่งข้อความไปที่ Netlify Function แล้วรับไฟล์เสียงกลับมา
+    async function fetchAudio(chunk) {
+      const r = Math.round((Number(rateEl.value) - 1) * 100);
+      const rate = (r >= 0 ? "+" : "") + r + "%";
+      const res = await fetch("/.netlify/functions/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: chunk, voice: voiceEl.value, rate }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return await res.blob();
+    }
+
+    function playBlob(blob) {
+      return new Promise((resolve, reject) => {
+        audio = new Audio(URL.createObjectURL(blob));
+        audio.onended = resolve;
+        audio.onerror = () => reject(new Error("เล่นไฟล์เสียงไม่ได้"));
+        audio.play().catch(reject);
+      });
+    }
+
+    function setBusy(busy) {
+      playBtn.disabled = busy;
+      stopBtn.disabled = !busy;
+    }
+
+    playBtn.addEventListener("click", async () => {
+      const chunks = splitText(textEl.value.trim());
+      if (!chunks.length) {
+        statusEl.textContent = "กรุณาวางข้อความก่อน";
+        return;
+      }
+
+      stopped = false;
+      parts = [];
+      downloadEl.hidden = true;
+      setBusy(true);
+
+      try {
+        for (let i = 0; i < chunks.length; i++) {
+          if (stopped) break;
+          statusEl.textContent = กำลังสร้างเสียงส่วนที่ ${i + 1}/${chunks.length};
+          const blob = await fetchAudio(chunks[i]);
+          if (stopped) break;
+          parts.push(blob);
+          statusEl.textContent = กำลังเล่นส่วนที่ ${i + 1}/${chunks.length};
+          await playBlob(blob);
+        }
+
+        if (!stopped && parts.length === chunks.length) {
+          statusEl.textContent = "เล่นจบแล้ว";
+          downloadEl.href = URL.createObjectURL(new Blob(parts, { type: "audio/mpeg" }));
+          downloadEl.hidden = false;
+        }
+      } catch (e) {
+        statusEl.textContent = "เกิดข้อผิดพลาด: " + e.message;
+      }
+      setBusy(false);
+    });
+
+    stopBtn.addEventListener("click", () => {
+      stopped = true;
+      if (audio) {
+        audio.pause();
+        audio.dispatchEvent(new Event("ended")); // ปลดการรอในลูปเล่นเสียง
+      }
+      statusEl.textContent = "หยุดแล้ว";
+    });
+  </script>
+</body>
+</html>
+
