@@ -30,9 +30,19 @@ exports.handler = async (event) => {
     const buffer = await new Promise((resolve, reject) => {
       const chunks = [];
       audioStream.on("data", (c) => chunks.push(c));
+      audioStream.on("close", () => resolve(Buffer.concat(chunks)));
       audioStream.on("end", () => resolve(Buffer.concat(chunks)));
       audioStream.on("error", reject);
     });
+
+    console.log("TTS bytes:", buffer.length);
+
+    if (buffer.length < 1000) {
+      return {
+        statusCode: 502,
+        body: "TTS returned empty audio (" + buffer.length + " bytes). Microsoft service may have rejected the request.",
+      };
+    }
 
     return {
       statusCode: 200,
@@ -41,6 +51,8 @@ exports.handler = async (event) => {
       isBase64Encoded: true,
     };
   } catch (e) {
+    console.error("TTS error:", e);
     return { statusCode: 500, body: "TTS error: " + e.message };
   }
 };
+
